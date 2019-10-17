@@ -1,15 +1,16 @@
 package main
 
-import "github.com/samuel/go-zookeeper/zk"
-
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"strings"
 	"time"
+
+	"go.etcd.io/etcd/clientv3"
 )
 
 //Configuration is exported
@@ -27,32 +28,63 @@ type Configuration struct {
 }
 
 var (
-	zkFlags       = int32(0)
-	zkACL         = zk.WorldACL(zk.PermAll)
+	// zkFlags       = int32(0)
+	// zkACL         = zk.WorldACL(zk.PermAll)
 	zkConnTimeout = time.Second * 15
 )
 
-func initServerConfigData(conf *Configuration) (string, []byte, error) {
+// func initServerConfigData(conf *Configuration) (string, []byte, error) {
 
+// 	hosts := strings.Split(conf.Zookeeper.Hosts, ",")
+// 	conn, event, err := zk.Connect(hosts, zkConnTimeout)
+// 	if err != nil {
+// 		return "", nil, err
+// 	}
+
+// 	defer conn.Close()
+// 	<-event
+// 	if ret, _, _ := conn.Exists(conf.Zookeeper.Root); !ret {
+// 		if _, err := conn.Create(conf.Zookeeper.Root, []byte{}, zkFlags, zkACL); err != nil {
+// 			return "", nil, fmt.Errorf("zookeeper root: %s failure", conf.Zookeeper.Root)
+// 		}
+// 	}
+
+// 	serverConfigPath := conf.Zookeeper.Root + "/ServerConfig"
+// 	ret, _, err := conn.Exists(serverConfigPath)
+// 	if err != nil {
+// 		return "", nil, err
+// 	}
+
+// 	buf := bytes.NewBuffer([]byte{})
+// 	if err = json.NewEncoder(buf).Encode(conf.ServerConfig); err != nil {
+// 		return "", nil, err
+// 	}
+
+// 	data := buf.Bytes()
+// 	if !ret {
+// 		if _, err := conn.Create(serverConfigPath, data, zkFlags, zkACL); err != nil {
+// 			return "", nil, err
+// 		}
+// 	} else {
+// 		if _, err := conn.Set(serverConfigPath, data, -1); err != nil {
+// 			return "", nil, err
+// 		}
+// 	}
+// 	return serverConfigPath, data, nil
+// }
+
+func initServerConfigData(conf *Configuration) (string, []byte, error) {
 	hosts := strings.Split(conf.Zookeeper.Hosts, ",")
-	conn, event, err := zk.Connect(hosts, zkConnTimeout)
+	conn, err := clientv3.New(clientv3.Config{
+		Endpoints:   hosts,
+		DialTimeout: zkConnTimeout,
+	})
 	if err != nil {
 		return "", nil, err
 	}
-
 	defer conn.Close()
-	<-event
-	if ret, _, _ := conn.Exists(conf.Zookeeper.Root); !ret {
-		if _, err := conn.Create(conf.Zookeeper.Root, []byte{}, zkFlags, zkACL); err != nil {
-			return "", nil, fmt.Errorf("zookeeper root: %s failure", conf.Zookeeper.Root)
-		}
-	}
 
 	serverConfigPath := conf.Zookeeper.Root + "/ServerConfig"
-	ret, _, err := conn.Exists(serverConfigPath)
-	if err != nil {
-		return "", nil, err
-	}
 
 	buf := bytes.NewBuffer([]byte{})
 	if err = json.NewEncoder(buf).Encode(conf.ServerConfig); err != nil {
@@ -60,15 +92,21 @@ func initServerConfigData(conf *Configuration) (string, []byte, error) {
 	}
 
 	data := buf.Bytes()
-	if !ret {
-		if _, err := conn.Create(serverConfigPath, data, zkFlags, zkACL); err != nil {
-			return "", nil, err
-		}
-	} else {
-		if _, err := conn.Set(serverConfigPath, data, -1); err != nil {
-			return "", nil, err
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	_, err = conn.Put(ctx, serverConfigPath, string(data))
+	cancel()
+	if err != nil {
+		return "", nil, err
 	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
+	resp, err := conn.Get(ctx, serverConfigPath)
+	cancel()
+	if err != nil {
+		return "", nil, err
+	}
+	fmt.Println("get:", resp.Kvs)
+
 	return serverConfigPath, data, nil
 }
 
